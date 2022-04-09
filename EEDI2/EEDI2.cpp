@@ -31,6 +31,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <mutex>
 
 #include <VapourSynth.h>
 #include <VSHelper.h>
@@ -43,6 +44,8 @@ struct EEDI2Data {
     unsigned fieldS, nt4, nt7, nt8, nt13, nt19;
     int8_t * limlut;
     int16_t * limlut2;
+
+    std::mutex lock;
     std::unordered_map<std::thread::id, int *> cx2, cy2, cxy, tmpc;
 };
 
@@ -1606,12 +1609,8 @@ static void postProcessCorner(const VSFrameRef * msk, VSFrameRef * dst, const in
 template<typename T>
 static void process(const VSFrameRef * src, VSFrameRef * dst, VSFrameRef * msk, VSFrameRef * tmp,
                     VSFrameRef * dst2, VSFrameRef * dst2M, VSFrameRef * tmp2, VSFrameRef * tmp2_2, VSFrameRef * msk2,
-                    const unsigned field, const EEDI2Data * d, VSCore * core, const VSAPI * vsapi) noexcept {
-    const auto threadId = std::this_thread::get_id();
-    int * cx2 = d->cx2.at(threadId);
-    int * cy2 = d->cy2.at(threadId);
-    int * cxy = d->cxy.at(threadId);
-    int * tmpc = d->tmpc.at(threadId);
+                    const unsigned field, const EEDI2Data * d, VSCore * core, const VSAPI * vsapi,
+                    int *cx2, int *cy2, int *cxy, int *tmpc) noexcept {
 
     for (int plane = 0; plane < d->vi->format->numPlanes; plane++) {
         buildEdgeMask<T>(src, msk, plane, d, vsapi);
@@ -1675,8 +1674,10 @@ static const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void *
     if (activationReason == arInitial) {
         vsapi->requestFrameFilter(n, d->node, frameCtx);
     } else if (activationReason == arAllFramesReady) {
+        int *cx2 = nullptr, *cy2 = nullptr, *cxy = nullptr, *tmpc = nullptr;
         try {
             auto threadId = std::this_thread::get_id();
+            std::lock_guard<std::mutex> guard(d->lock);
 
             if (!d->cx2.count(threadId)) {
                 if (d->pp > 1 && d->map == 0) {
@@ -1688,6 +1689,7 @@ static const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void *
                     d->cx2.emplace(threadId, nullptr);
                 }
             }
+            cx2 = d->cx2[threadId];
 
             if (!d->cy2.count(threadId)) {
                 if (d->pp > 1 && d->map == 0) {
@@ -1699,6 +1701,7 @@ static const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void *
                     d->cy2.emplace(threadId, nullptr);
                 }
             }
+            cy2 = d->cy2[threadId];
 
             if (!d->cxy.count(threadId)) {
                 if (d->pp > 1 && d->map == 0) {
@@ -1710,6 +1713,7 @@ static const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void *
                     d->cxy.emplace(threadId, nullptr);
                 }
             }
+            cxy = d->cxy[threadId];
 
             if (!d->tmpc.count(threadId)) {
                 if (d->pp > 1 && d->map == 0) {
@@ -1721,6 +1725,7 @@ static const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void *
                     d->tmpc.emplace(threadId, nullptr);
                 }
             }
+            tmpc = d->tmpc[threadId];
         } catch (const std::string & error) {
             vsapi->setFilterError(("EEDI2: " + error).c_str(), frameCtx);
             return nullptr;
@@ -1745,9 +1750,9 @@ static const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void *
             field = (n & 1) ? (d->fieldS == 2 ? 1 : 0) : (d->fieldS == 2 ? 0 : 1);
 
         if (d->vi->format->bytesPerSample == 1)
-            process<uint8_t>(src, dst, msk, tmp, dst2, dst2M, tmp2, tmp2_2, msk2, field, d, core, vsapi);
+            process<uint8_t>(src, dst, msk, tmp, dst2, dst2M, tmp2, tmp2_2, msk2, field, d, core, vsapi, cx2, cy2, cxy, tmpc);
         else
-            process<uint16_t>(src, dst, msk, tmp, dst2, dst2M, tmp2, tmp2_2, msk2, field, d, core, vsapi);
+            process<uint16_t>(src, dst, msk, tmp, dst2, dst2M, tmp2, tmp2_2, msk2, field, d, core, vsapi, cx2, cy2, cxy, tmpc);
 
         if (d->map == 0) {
             vsapi->freeFrame(dst);
